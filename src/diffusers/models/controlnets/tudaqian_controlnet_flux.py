@@ -66,6 +66,7 @@ class TudaqianFluxControlNetModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
         # Initialize beta for the alternative condition (controlnet_cond_alt)
         self.control_beta_scale = nn.Parameter(torch.tensor(1.0))
         # <<< END NEW CODE >>>
+        self.control_gamma_scale = nn.Parameter(torch.tensor(1.0))
         
         self.out_channels = in_channels
         self.inner_dim = num_attention_heads * attention_head_dim
@@ -121,6 +122,8 @@ class TudaqianFluxControlNetModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
         # <<< START NEW CODE >>>
         # Add the embedder for the alternative condition, initialized to zeros
         self.controlnet_alt_x_embedder = zero_module(torch.nn.Linear(in_channels, self.inner_dim))
+
+        self.controlnet_3_x_embedder = zero_module(torch.nn.Linear(in_channels, self.inner_dim))
         # <<< END NEW CODE >>>
 
         self.gradient_checkpointing = False
@@ -220,6 +223,9 @@ class TudaqianFluxControlNetModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
             # Ensure this line exists only if controlnet_alt_x_embedder was added in __init__
             if hasattr(controlnet, "controlnet_alt_x_embedder"):
                  controlnet.controlnet_alt_x_embedder = zero_module(controlnet.controlnet_alt_x_embedder)
+
+            if hasattr(controlnet, "controlnet_3_x_embedder"):
+                 controlnet.controlnet_3_x_embedder = zero_module(controlnet.controlnet_3_x_embedder)
             # <<< END NEW CODE >>>
 
         return controlnet
@@ -230,6 +236,7 @@ class TudaqianFluxControlNetModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
         controlnet_cond: torch.Tensor,
         # <<< START NEW CODE >>>
         controlnet_cond_alt: torch.Tensor = None, # Add the new argument
+        controlnet_cond_3: torch.Tensor = None, # Add the new argument
         # <<< END NEW CODE >>>
         controlnet_mode: torch.Tensor = None,
         conditioning_scale: float = 1.0,
@@ -296,7 +303,7 @@ class TudaqianFluxControlNetModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
         # 1. Get the embedding for the primary condition
         primary_cond_embedding = self.controlnet_x_embedder(controlnet_cond)
         # 2. Scale it using the learnable alpha
-        scaled_primary_cond = self.control_alpha_scale * primary_cond_embedding
+        scaled_primary_cond = 1.0 * primary_cond_embedding
         # 3. Add the scaled embedding to hidden_states
         hidden_states = hidden_states + scaled_primary_cond
 
@@ -305,9 +312,17 @@ class TudaqianFluxControlNetModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
              # 1. Get the embedding for the alternative condition
              alt_cond_embedding = self.controlnet_alt_x_embedder(controlnet_cond_alt)
              # 2. Scale it using the learnable beta
-             scaled_alt_cond = self.control_beta_scale * alt_cond_embedding
+             scaled_alt_cond = 1.0 * alt_cond_embedding
              # 3. Add the scaled embedding to hidden_states
              hidden_states = hidden_states + scaled_alt_cond
+
+        if controlnet_cond_3 is not None and hasattr(self, "controlnet_3_x_embedder"):
+             # 1. Get the embedding for the alternative condition
+             third_cond_embedding = self.controlnet_3_x_embedder(controlnet_cond_3)
+             # 2. Scale it using the learnable beta
+             scaled_3_cond = 1.0 * third_cond_embedding
+             # 3. Add the scaled embedding to hidden_states
+             hidden_states = hidden_states + scaled_3_cond
 
         timestep = timestep.to(hidden_states.dtype) * 1000
         if guidance is not None:

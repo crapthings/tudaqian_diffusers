@@ -148,7 +148,7 @@ def log_validation(
                     pooled_prompt_embeds=pooled_prompt_embeds,
                     control_image=validation_image,
                     num_inference_steps=28,
-                    controlnet_conditioning_scale=0.7,
+                    controlnet_conditioning_scale=1.0,
                     guidance_scale=3.5,
                     generator=generator,
                 ).images[0]
@@ -517,6 +517,15 @@ def parse_args(input_args=None):
         help="The column of the dataset containing the alternative controlnet conditioning image.",
     )
     # <<< END NEW CODE >>>
+
+    # <<< START NEW CODE >>>
+    parser.add_argument(
+        "--conditioning_image_3_column",
+        type=str,
+        default="conditioning_image_3", # Default to the name in your dataloader
+        help="The column of the dataset containing the 3rd controlnet conditioning image.",
+    )
+    # <<< END NEW CODE >>>
     
     parser.add_argument(
         "--caption_column",
@@ -738,6 +747,27 @@ def get_train_dataset(args, accelerator):
                 f"`--conditioning_image_alt_column` value '{args.conditioning_image_alt_column}' not found in dataset columns. Dataset columns are: {', '.join(column_names)}"
             )
     # <<< END NEW CODE >>>
+
+    # <<< START NEW CODE >>>
+    if args.conditioning_image_3_column is None:
+        # Try to infer if not provided (assuming it might be the next column)
+        # This inference is basic, adjust if needed or make the argument required.
+        try:
+            conditioning_image_3_column_index = column_names.index(conditioning_image_column) + 1
+            conditioning_image_3_column = column_names[conditioning_image_3_column_index]
+            logger.info(f"conditioning image 3rd column defaulting to {conditioning_image_3_column}")
+        except (ValueError, IndexError):
+             raise ValueError(
+                 "Could not infer `conditioning_image_3_column`. Please specify it using `--conditioning_image_3_column`. "
+                 f"Dataset columns are: {', '.join(column_names)}"
+            )
+    else:
+        conditioning_image_3_column = args.conditioning_image_3_column
+        if conditioning_image_3_column not in column_names:
+            raise ValueError(
+                f"`--conditioning_image_3_column` value '{args.conditioning_image_3_column}' not found in dataset columns. Dataset columns are: {', '.join(column_names)}"
+            )
+    # <<< END NEW CODE >>>
     
     if args.caption_column is None:
         caption_column = column_names[1]
@@ -817,12 +847,21 @@ def prepare_train_dataset(dataset, accelerator):
         ]
         conditioning_images_alt = [conditioning_image_alt_transforms(image) for image in conditioning_images_alt]
         # <<< END NEW CODE >>>
+
+        # <<< START NEW CODE >>>
+        conditioning_images_3 = [
+            (image.convert("RGB") if not isinstance(image, str) else Image.open(image).convert("RGB"))
+            for image in examples[args.conditioning_image_3_column] # Use the new column name
+        ]
+        conditioning_images_3 = [conditioning_image_transforms(image) for image in conditioning_images_3]
+        # <<< END NEW CODE >>>
         
         examples["pixel_values"] = images
         examples["conditioning_pixel_values"] = conditioning_images
 
         # <<< START NEW CODE >>>
         examples["conditioning_pixel_values_alt"] = conditioning_images_alt # Add to examples dict
+        examples["conditioning_pixel_values_3"] = conditioning_images_3 # Add to examples dict
         # <<< END NEW CODE >>>
 
         return examples
@@ -843,6 +882,9 @@ def collate_fn(examples):
     # <<< START NEW CODE >>>
     conditioning_pixel_values_alt = torch.stack([example["conditioning_pixel_values_alt"] for example in examples])
     conditioning_pixel_values_alt = conditioning_pixel_values_alt.to(memory_format=torch.contiguous_format).float()
+
+    conditioning_pixel_values_3 = torch.stack([example["conditioning_pixel_values_3"] for example in examples])
+    conditioning_pixel_values_3 = conditioning_pixel_values_3.to(memory_format=torch.contiguous_format).float()
     # <<< END NEW CODE >>>
 
     prompt_ids = torch.stack([torch.tensor(example["prompt_embeds"]) for example in examples])
@@ -855,6 +897,7 @@ def collate_fn(examples):
         "conditioning_pixel_values": conditioning_pixel_values,
         # <<< START NEW CODE >>>
         "conditioning_pixel_values_alt": conditioning_pixel_values_alt, # Add to the returned dict
+        "conditioning_pixel_values_3": conditioning_pixel_values_3, # Add to the returned dict
         # <<< END NEW CODE >>>
         "prompt_ids": prompt_ids,
         "unet_added_conditions": {"pooled_prompt_embeds": pooled_prompt_embeds, "time_ids": text_ids},
@@ -1149,8 +1192,8 @@ def main(args):
         return {"prompt_embeds": prompt_embeds, "pooled_prompt_embeds": pooled_prompt_embeds, "text_ids": text_ids}
 
     train_dataset = get_train_dataset(args, accelerator)
-    text_encoders = [text_encoder_one, text_encoder_two]
-    tokenizers = [tokenizer_one, tokenizer_two]
+    # text_encoders = [text_encoder_one, text_encoder_two]
+    # tokenizers = [tokenizer_one, tokenizer_two]
     compute_embeddings_fn = functools.partial(
         compute_embeddings,
         flux_controlnet_pipeline=flux_controlnet_pipeline,
@@ -1167,7 +1210,10 @@ def main(args):
             compute_embeddings_fn, batched=True, new_fingerprint=new_fingerprint, batch_size=50
         )
 
-    del text_encoders, tokenizers, text_encoder_one, text_encoder_two, tokenizer_one, tokenizer_two
+    # del text_encoders, tokenizers, text_encoder_one, text_encoder_two, tokenizer_one, tokenizer_two
+    text_encoder_one.to("cpu")
+    text_encoder_two.to("cpu")
+    
     free_memory()
 
     # Then get the training dataset ready to be passed to the dataloader.
@@ -1333,6 +1379,22 @@ def main(args):
                 # NOTE: 'control_image_alt' is NOT used in the model calls below yet.
                 # <<< END NEW CODE >>>
 
+                # <<< START NEW CODE >>>
+                # VAE encode the alternative conditioning image
+                control_3_values = batch["conditioning_pixel_values_3"].to(dtype=weight_dtype)
+                control_3_latents = vae.encode(control_3_values).latent_dist.sample()
+                control_3_latents = (control_3_latents - vae.config.shift_factor) * vae.config.scaling_factor
+                # We now have 'control_image_alt' in latent space, ready to be used.
+                control_image_3 = FluxControlNetPipeline._pack_latents(
+                    control_3_latents,
+                    control_3_values.shape[0],
+                    control_3_latents.shape[1],
+                    control_3_latents.shape[2],
+                    control_3_latents.shape[3],
+                )
+                # NOTE: 'control_image_3' is NOT used in the model calls below yet.
+                # <<< END NEW CODE >>>
+
                 latent_image_ids = FluxControlNetPipeline._prepare_latent_image_ids(
                     batch_size=pixel_latents_tmp.shape[0],
                     height=pixel_latents_tmp.shape[2] // 2,
@@ -1374,6 +1436,7 @@ def main(args):
                     hidden_states=noisy_model_input,
                     controlnet_cond=control_image,
                     controlnet_cond_alt=control_image_alt, # <-- How to pass this? Needs model change or combination strategy.
+                    controlnet_cond_3=control_image_3, # <-- How to pass this? Needs model change or combination strategy.
                     timestep=timesteps / 1000,
                     guidance=guidance_vec,
                     pooled_projections=batch["unet_added_conditions"]["pooled_prompt_embeds"].to(dtype=weight_dtype),
