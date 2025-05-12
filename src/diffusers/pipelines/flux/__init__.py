@@ -28,6 +28,7 @@ else:
     _import_structure["pipeline_flux_control_img2img"] = ["FluxControlImg2ImgPipeline"]
     _import_structure["pipeline_flux_control_inpaint"] = ["FluxControlInpaintPipeline"]
     _import_structure["pipeline_flux_controlnet"] = ["FluxControlNetPipeline"]
+    _import_structure["tudaqian_pipeline_flux_controlnet"] = ["TudaqianFluxControlNetPipeline"]
     _import_structure["pipeline_flux_controlnet_image_to_image"] = ["FluxControlNetImg2ImgPipeline"]
     _import_structure["pipeline_flux_controlnet_inpainting"] = ["FluxControlNetInpaintPipeline"]
     _import_structure["pipeline_flux_fill"] = ["FluxFillPipeline"]
@@ -47,6 +48,7 @@ if TYPE_CHECKING or DIFFUSERS_SLOW_IMPORT:
         from .pipeline_flux_control_img2img import FluxControlImg2ImgPipeline
         from .pipeline_flux_control_inpaint import FluxControlInpaintPipeline
         from .pipeline_flux_controlnet import FluxControlNetPipeline
+        from .tudaqian_pipeline_flux_controlnet import TudaqianFluxControlNetPipeline
         from .pipeline_flux_controlnet_image_to_image import FluxControlNetImg2ImgPipeline
         from .pipeline_flux_controlnet_inpainting import FluxControlNetInpaintPipeline
         from .pipeline_flux_fill import FluxFillPipeline
